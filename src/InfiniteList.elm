@@ -1,11 +1,12 @@
 module InfiniteList exposing
     ( init
-    , config, withConstantHeight, withVariableHeight
+    , config, withConstantHeight, withVariableHeight, withKeepFirst
     , onScroll
     , view
-    , withOffset, withCustomContainer, withClass, withStyles, withId, withKeepFirst
+    , withOffset, withCustomContainer, withClass, withStyles, withId
     , updateScroll, scrollToNthItem
     , Model, Config, ItemHeight
+    , Msg, defaultContainer, update
     )
 
 {-| Displays a virtual infinite list of items by only showing visible items on screen. This is very useful for
@@ -56,18 +57,33 @@ is computed using the `scrollTop` value from the scroll event.
 -}
 
 import Browser.Dom as Dom
-import Html exposing (Html, div)
-import Html.Attributes exposing (style)
-import Html.Events exposing (on)
-import Html.Lazy exposing (lazy3)
+import Element exposing (Element)
+import Element.Lazy
+import Html
+import Html.Attributes
+import Html.Events
 import Json.Decode as JD
+import Process
 import Task
+import Time
 
 
 {-| Model of the infinite list module. You need to create a new one using `init` function.
 -}
 type Model
-    = Model Float
+    = Model Internal
+
+
+type alias Internal =
+    { offset : Float
+    , throttleOffset : Float
+    , throttleIgnore : Bool
+    }
+
+
+type Msg
+    = Offset Float
+    | Timeout ()
 
 
 {-| Configuration for your infinite list, describing the look and feel.
@@ -80,14 +96,15 @@ type Config item msg
 
 type alias ConfigInternal item msg =
     { itemHeight : ItemHeight item
-    , itemView : Int -> Int -> item -> Html msg
+    , itemView : Int -> Int -> item -> Element msg
     , containerHeight : Int
     , offset : Int
-    , customContainer : List ( String, String ) -> List (Html msg) -> Html msg
+    , customContainer : List (Element.Attribute msg) -> List (Element msg) -> Element msg
     , id : Maybe String
-    , styles : List ( String, String )
+    , styles : List (Element.Attribute msg)
     , class : Maybe String
     , keepFirst : Int
+    , mOnInfiniteListScrollMsg : Maybe (Msg -> msg)
     }
 
 
@@ -107,7 +124,7 @@ type ItemHeight item
 -}
 init : Model
 init =
-    Model 0
+    Model <| Internal 0 0 False
 
 
 {-| Creates a new `Config`. This function will need a few mandatory parameters
@@ -140,9 +157,10 @@ if you specified the exact container's height.
 
 -}
 config :
-    { itemView : Int -> Int -> item -> Html msg
+    { itemView : Int -> Int -> item -> Element msg
     , itemHeight : ItemHeight item
     , containerHeight : Int
+    , onInfiniteListScrollMsg : Msg -> msg
     }
     -> Config item msg
 config conf =
@@ -156,6 +174,7 @@ config conf =
         , class = Nothing
         , id = Nothing
         , keepFirst = 0
+        , mOnInfiniteListScrollMsg = Just conf.onInfiniteListScrollMsg
         }
 
 
@@ -240,7 +259,7 @@ withId id (Config value) =
 This module also specified styles that may override yours.
 
 -}
-withStyles : List ( String, String ) -> Config item msg -> Config item msg
+withStyles : List (Element.Attribute msg) -> Config item msg -> Config item msg
 withStyles styles (Config value) =
     Config
         { value | styles = styles }
@@ -271,7 +290,7 @@ Here is how to do:
         ul [ style styles ] children
 
 -}
-withCustomContainer : (List ( String, String ) -> List (Html msg) -> Html msg) -> Config item msg -> Config item msg
+withCustomContainer : (List (Element.Attribute msg) -> List (Element msg) -> Element msg) -> Config item msg -> Config item msg
 withCustomContainer customContainer (Config value) =
     Config
         { value | customContainer = customContainer }
@@ -282,6 +301,7 @@ withCustomContainer customContainer (Config value) =
 This can be used if the first element is a header which is shown sticky for example.
 
 The default is 0, removing all items from the top when scrolling down.
+
 -}
 withKeepFirst : Int -> Config item msg -> Config item msg
 withKeepFirst keepFirst (Config value) =
@@ -308,9 +328,14 @@ your infinite list container.
             [ InfiniteList.view config model.infiniteList list ]
 
 -}
-onScroll : (Model -> msg) -> Html.Attribute msg
-onScroll scrollMsg =
-    on "scroll" (decodeScroll scrollMsg)
+onScroll : Maybe (Msg -> msg) -> Element.Attribute msg
+onScroll mScrollMsg =
+    case mScrollMsg of
+        Nothing ->
+            Element.htmlAttribute <| Html.Attributes.style "" ""
+
+        Just onMsg ->
+            Element.htmlAttribute <| Html.Events.on "scroll" (decodeScroll onMsg)
 
 
 {-| **Only use this function if you handle `on "scroll"` event yourself**
@@ -342,14 +367,41 @@ It returns the updated `Model`
                 ( { model | infiniteList = InfList.updateScroll value model.infiniteList }, Cmd.none )
 
 -}
-updateScroll : JD.Value -> Model -> Model
-updateScroll value (Model model) =
-    case JD.decodeValue decodeToModel value of
+updateScroll : JD.Value -> Float -> Float
+updateScroll value offset =
+    case JD.decodeValue decodeToOffset value of
         Ok m ->
             m
 
         Err _ ->
-            init
+            0
+
+
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg (Model internal) =
+    case msg of
+        Offset offset ->
+            if internal.throttleIgnore then
+                ( Model { internal | throttleOffset = offset }, Cmd.none )
+
+            else
+                ( Model
+                    { internal
+                        | throttleOffset = offset
+                        , offset = offset
+                        , throttleIgnore = True
+                    }
+                , Process.sleep 200 |> Task.perform Timeout
+                )
+
+        Timeout _ ->
+            ( Model
+                { internal
+                    | throttleIgnore = False
+                    , offset = internal.throttleOffset
+                }
+            , Cmd.none
+            )
 
 
 
@@ -386,9 +438,9 @@ updateScroll value (Model model) =
             [ InfiniteList.view config model.infiniteList list ]
 
 -}
-view : Config item msg -> Model -> List item -> Html msg
+view : Config item msg -> Model -> List item -> Element msg
 view configValue model list =
-    lazy3 lazyView configValue model list
+    Element.Lazy.lazy3 lazyView configValue model list
 
 
 type alias Calculation item =
@@ -399,11 +451,11 @@ type alias Calculation item =
     }
 
 
-lazyView : Config item msg -> Model -> List item -> Html msg
-lazyView ((Config { itemView, customContainer }) as configValue) (Model scrollTop) items =
+lazyView : Config item msg -> Model -> List item -> Element msg
+lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg }) as configValue) (Model internal) items =
     let
         { skipCount, elements, topMargin, totalHeight } =
-            computeElementsAndSizes configValue scrollTop items
+            computeElementsAndSizes configValue internal.offset items
 
         elementsCountToSkip =
             skipCount
@@ -411,17 +463,32 @@ lazyView ((Config { itemView, customContainer }) as configValue) (Model scrollTo
         elementsToShow =
             elements
     in
-    div
-        (attributes totalHeight configValue)
-        [ customContainer
-            [ ( "margin", "0" )
-            , ( "padding", "0" )
-            , ( "box-sizing", "border-box" )
-            , ( "top", String.fromInt topMargin ++ "px" )
-            , ( "position", "relative" )
-            ]
-            (List.indexedMap (\idx item -> lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
+    Element.el
+        [ Element.htmlAttribute <| Html.Attributes.style "width" "100%"
+        , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
+        , Element.htmlAttribute <| Html.Attributes.style "overflow-x" "hidden"
+        , Element.htmlAttribute <| Html.Attributes.style "overflow-y" "auto"
+        , Element.htmlAttribute <| Html.Attributes.style "-webkit-overflow-scrolling" "touch"
+        , Element.htmlAttribute <| Html.Attributes.style "position" "absolute"
+        , Element.htmlAttribute <| Html.Attributes.style "inset" "0"
+        , Element.padding 2
+        , onScroll mOnInfiniteListScrollMsg
         ]
+    <|
+        Element.column
+            (attributes totalHeight configValue)
+            --[]
+            [ customContainer
+                [ Element.htmlAttribute <| Html.Attributes.style "margin" "0"
+                , Element.htmlAttribute <| Html.Attributes.style "padding" "0"
+                , Element.htmlAttribute <| Html.Attributes.style "box-sizing" "border-box"
+                , Element.htmlAttribute <| Html.Attributes.style "top" <| String.fromInt topMargin ++ "px"
+                , Element.htmlAttribute <| Html.Attributes.style "position" "relative"
+                , Element.htmlAttribute <| Html.Attributes.style "width" "100%"
+                , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
+                ]
+                (List.indexedMap (\idx item -> Element.Lazy.lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
+            ]
 
 
 computeElementsAndSizes : Config item msg -> Float -> List item -> Calculation item
@@ -458,34 +525,34 @@ firstNItemsHeight idx configValue items =
     toFloat totalHeight
 
 
-defaultContainer : List ( String, String ) -> List (Html msg) -> Html msg
+defaultContainer : List (Element.Attribute msg) -> List (Element msg) -> Element msg
 defaultContainer styles elements =
-    div (styles |> List.map (\( attr, value ) -> style attr value)) elements
+    Element.column styles elements
 
 
-attributes : Int -> Config item msg -> List (Html.Attribute msg)
+attributes : Int -> Config item msg -> List (Element.Attribute msg)
 attributes totalHeight (Config { styles, id, class }) =
-    (styles
-        ++ [ ( "margin", "0" )
-           , ( "padding", "0" )
-           , ( "box-sizing", "border-box" )
-           , ( "height", String.fromInt totalHeight ++ "px" )
-           , ( "width", "100%" )
+    styles
+        ++ [ Element.htmlAttribute <| Html.Attributes.style "margin" "0"
+           , Element.htmlAttribute <| Html.Attributes.style "padding" "0"
+           , Element.htmlAttribute <| Html.Attributes.style "box-sizing" "border-box"
+           , Element.htmlAttribute <| Html.Attributes.style "height" <| String.fromInt totalHeight ++ "px"
+           , Element.htmlAttribute <| Html.Attributes.style "width" "100%"
+
+           --, Element.height <| Element.px totalHeight
            ]
-    )
-        |> List.map (\( attr, value ) -> style attr value)
-        |> addAttribute Html.Attributes.id id
-        |> addAttribute Html.Attributes.class class
+        |> maybeAddAttribute Html.Attributes.id id
+        |> maybeAddAttribute Html.Attributes.class class
 
 
-addAttribute : (a -> Html.Attribute msg) -> Maybe a -> List (Html.Attribute msg) -> List (Html.Attribute msg)
-addAttribute f value newAttributes =
+maybeAddAttribute : (a -> Html.Attribute msg) -> Maybe a -> List (Element.Attribute msg) -> List (Element.Attribute msg)
+maybeAddAttribute f value newAttributes =
     case value of
         Nothing ->
             newAttributes
 
         Just v ->
-            f v :: newAttributes
+            (Element.htmlAttribute <| f v) :: newAttributes
 
 
 
@@ -506,10 +573,12 @@ computeElementsAndSizesForSimpleHeight (Config { offset, containerHeight, keepFi
                 ++ (List.drop (keepFirst + elementsCountToSkip) >> List.take elementsCountToShow) items
 
         topMargin =
-            elementsCountToSkip * itemHeight
+            elementsCountToSkip
+                * itemHeight
 
         totalHeight =
-            List.length items * itemHeight
+            List.length items
+                * itemHeight
     in
     { skipCount = elementsCountToSkip, elements = elementsToShow, topMargin = topMargin, totalHeight = totalHeight }
 
@@ -531,8 +600,8 @@ computeElementsAndSizesForMultipleHeights (Config { offset, containerHeight, kee
             -- If still below limit, but we need to keep the first x, we keep it
             if newCurrentHeight <= (ceiling scrollTop - offset) && idx < keepFirst then
                 { calculatedTuple | idx = idx + 1, elementsToShow = item :: elementsToShow, currentHeight = newCurrentHeight }
-            
-            -- If still below limit, we skip it
+                -- If still below limit, we skip it
+
             else if newCurrentHeight <= (ceiling scrollTop - offset) then
                 { calculatedTuple | idx = idx + 1, elementsCountToSkip = elementsCountToSkip + 1, topMargin = topMargin + height, currentHeight = newCurrentHeight }
 
@@ -564,11 +633,15 @@ computeElementsAndSizesForMultipleHeights (Config { offset, containerHeight, kee
 -- Decoder
 
 
-decodeToModel : JD.Decoder Model
-decodeToModel =
-    JD.at [ "target", "scrollTop" ] JD.float |> JD.map Model
+decodeToOffset : JD.Decoder Float
+decodeToOffset =
+    JD.at [ "target", "scrollTop" ] JD.float
 
 
-decodeScroll : (Model -> msg) -> JD.Decoder msg
+
+--|> JD.map
+
+
+decodeScroll : (Msg -> msg) -> JD.Decoder msg
 decodeScroll scrollMsg =
-    JD.map (\s -> scrollMsg s) decodeToModel
+    JD.map (\s -> scrollMsg <| Offset s) decodeToOffset
