@@ -6,7 +6,7 @@ module InfiniteList exposing
     , withOffset, withCustomContainer, withClass, withStyles, withId
     , updateScroll, scrollToNthItem
     , Model, Config, ItemHeight
-    , Msg, defaultContainer, update
+    , Msg, defaultContainer, update, withCss
     )
 
 {-| Displays a virtual infinite list of items by only showing visible items on screen. This is very useful for
@@ -59,9 +59,10 @@ is computed using the `scrollTop` value from the scroll event.
 import Browser.Dom as Dom
 import Element exposing (Element)
 import Element.Lazy
-import Html
+import Html exposing (Html)
 import Html.Attributes
 import Html.Events
+import Html.Lazy
 import Json.Decode as JD
 import Process
 import Task
@@ -96,7 +97,7 @@ type Config item msg
 
 type alias ConfigInternal item msg =
     { itemHeight : ItemHeight item
-    , itemView : Int -> Int -> item -> Element msg
+    , itemView : Int -> Int -> item -> Html msg
     , containerHeight : Int
     , offset : Int
     , customContainer : List (Element.Attribute msg) -> List (Element msg) -> Element msg
@@ -105,6 +106,7 @@ type alias ConfigInternal item msg =
     , class : Maybe String
     , keepFirst : Int
     , mOnInfiniteListScrollMsg : Maybe (Msg -> msg)
+    , mCss : Maybe String
     }
 
 
@@ -157,7 +159,7 @@ if you specified the exact container's height.
 
 -}
 config :
-    { itemView : Int -> Int -> item -> Element msg
+    { itemView : Int -> Int -> item -> Html msg
     , itemHeight : ItemHeight item
     , containerHeight : Int
     , onInfiniteListScrollMsg : Msg -> msg
@@ -175,6 +177,7 @@ config conf =
         , id = Nothing
         , keepFirst = 0
         , mOnInfiniteListScrollMsg = Just conf.onInfiniteListScrollMsg
+        , mCss = Nothing
         }
 
 
@@ -263,6 +266,12 @@ withStyles : List (Element.Attribute msg) -> Config item msg -> Config item msg
 withStyles styles (Config value) =
     Config
         { value | styles = styles }
+
+
+withCss : String -> Config item msg -> Config item msg
+withCss css (Config value) =
+    Config
+        { value | mCss = Just css }
 
 
 {-| Specifies a custom container to use instead of the default `div` one inside the top `div` container.
@@ -452,7 +461,7 @@ type alias Calculation item =
 
 
 lazyView : Config item msg -> Model -> List item -> Element msg
-lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg }) as configValue) (Model internal) items =
+lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg, mCss }) as configValue) (Model internal) items =
     let
         { skipCount, elements, topMargin, totalHeight } =
             computeElementsAndSizes configValue internal.offset items
@@ -478,7 +487,13 @@ lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg }) as co
         Element.column
             (attributes totalHeight configValue)
             --[]
-            [ customContainer
+            [ case mCss of
+                Just css ->
+                    Element.html <| Html.node "style" [ Html.Attributes.id "OHLALA" ] [ Html.text css ]
+
+                Nothing ->
+                    Element.none
+            , customContainer
                 [ Element.htmlAttribute <| Html.Attributes.style "margin" "0"
                 , Element.htmlAttribute <| Html.Attributes.style "padding" "0"
                 , Element.htmlAttribute <| Html.Attributes.style "box-sizing" "border-box"
@@ -487,7 +502,7 @@ lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg }) as co
                 , Element.htmlAttribute <| Html.Attributes.style "width" "100%"
                 , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
                 ]
-                (List.indexedMap (\idx item -> Element.Lazy.lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
+                (List.indexedMap (\idx item -> Element.html <| Html.Lazy.lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
             ]
 
 
