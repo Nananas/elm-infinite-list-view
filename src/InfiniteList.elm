@@ -6,7 +6,7 @@ module InfiniteList exposing
     , withOffset, withCustomContainer, withClass, withStyles, withId
     , updateScroll, scrollToNthItem
     , Model, Config, ItemHeight
-    , Msg, defaultContainer, update, withCss
+    , Msg, defaultContainer, isMinimized, update, withCss
     )
 
 {-| Displays a virtual infinite list of items by only showing visible items on screen. This is very useful for
@@ -79,6 +79,7 @@ type alias Internal =
     { offset : Float
     , throttleOffset : Float
     , throttleIgnore : Bool
+    , minimized : Bool
     }
 
 
@@ -124,9 +125,14 @@ type ItemHeight item
         { infiniteList = InfiniteList.init }
 
 -}
-init : Model
-init =
-    Model <| Internal 0 0 False
+init : Bool -> Model
+init minimized =
+    Model <| Internal 0 0 False minimized
+
+
+isMinimized : Model -> Bool
+isMinimized (Model internal) =
+    internal.minimized
 
 
 {-| Creates a new `Config`. This function will need a few mandatory parameters
@@ -472,38 +478,42 @@ lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg, mCss })
         elementsToShow =
             elements
     in
-    Element.el
-        [ Element.htmlAttribute <| Html.Attributes.style "width" "100%"
-        , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
-        , Element.htmlAttribute <| Html.Attributes.style "overflow-x" "hidden"
-        , Element.htmlAttribute <| Html.Attributes.style "overflow-y" "auto"
-        , Element.htmlAttribute <| Html.Attributes.style "-webkit-overflow-scrolling" "touch"
-        , Element.htmlAttribute <| Html.Attributes.style "position" "absolute"
-        , Element.htmlAttribute <| Html.Attributes.style "inset" "0"
-        , Element.padding 2
-        , onScroll mOnInfiniteListScrollMsg
-        ]
-    <|
-        Element.column
-            (attributes totalHeight configValue)
-            --[]
-            [ case mCss of
-                Just css ->
-                    Element.html <| Html.node "style" [ Html.Attributes.id "OHLALA" ] [ Html.text css ]
+    if internal.minimized then
+        Element.none
 
-                Nothing ->
-                    Element.none
-            , customContainer
-                [ Element.htmlAttribute <| Html.Attributes.style "margin" "0"
-                , Element.htmlAttribute <| Html.Attributes.style "padding" "0"
-                , Element.htmlAttribute <| Html.Attributes.style "box-sizing" "border-box"
-                , Element.htmlAttribute <| Html.Attributes.style "top" <| String.fromInt topMargin ++ "px"
-                , Element.htmlAttribute <| Html.Attributes.style "position" "relative"
-                , Element.htmlAttribute <| Html.Attributes.style "width" "100%"
-                , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
-                ]
-                (List.indexedMap (\idx item -> Element.html <| Html.Lazy.lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
+    else
+        Element.el
+            [ Element.htmlAttribute <| Html.Attributes.style "width" "100%"
+            , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
+            , Element.htmlAttribute <| Html.Attributes.style "overflow-x" "hidden"
+            , Element.htmlAttribute <| Html.Attributes.style "overflow-y" "auto"
+            , Element.htmlAttribute <| Html.Attributes.style "-webkit-overflow-scrolling" "touch"
+            , Element.htmlAttribute <| Html.Attributes.style "position" "absolute"
+            , Element.htmlAttribute <| Html.Attributes.style "inset" "0"
+            , Element.padding 2
+            , onScroll mOnInfiniteListScrollMsg
             ]
+        <|
+            Element.column
+                (attributes totalHeight configValue)
+                --[]
+                [ case mCss of
+                    Just css ->
+                        Element.html <| Html.node "style" [ Html.Attributes.id "OHLALA" ] [ Html.text css ]
+
+                    Nothing ->
+                        Element.none
+                , customContainer
+                    [ Element.htmlAttribute <| Html.Attributes.style "margin" "0"
+                    , Element.htmlAttribute <| Html.Attributes.style "padding" "0"
+                    , Element.htmlAttribute <| Html.Attributes.style "box-sizing" "border-box"
+                    , Element.htmlAttribute <| Html.Attributes.style "top" <| String.fromInt topMargin ++ "px"
+                    , Element.htmlAttribute <| Html.Attributes.style "position" "relative"
+                    , Element.htmlAttribute <| Html.Attributes.style "width" "100%"
+                    , Element.htmlAttribute <| Html.Attributes.style "height" "100%"
+                    ]
+                    (List.indexedMap (\idx item -> Element.html <| Html.Lazy.lazy3 itemView idx (elementsCountToSkip + idx) item) elementsToShow)
+                ]
 
 
 computeElementsAndSizes : Config item msg -> Float -> List item -> Calculation item
