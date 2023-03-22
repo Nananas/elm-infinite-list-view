@@ -6,7 +6,7 @@ module InfiniteList exposing
     , withOffset, withCustomContainer, withClass, withStyles, withId
     , updateScroll, scrollToNthItem
     , Model, Config, ItemHeight
-    , Msg, defaultContainer, isMinimized, update, withCss
+    , Msg, defaultContainer, isMinimized, toggleMinimized, update, withCss
     )
 
 {-| Displays a virtual infinite list of items by only showing visible items on screen. This is very useful for
@@ -133,6 +133,11 @@ init minimized =
 isMinimized : Model -> Bool
 isMinimized (Model internal) =
     internal.minimized
+
+
+toggleMinimized : Model -> Model
+toggleMinimized (Model internal) =
+    init (not internal.minimized)
 
 
 {-| Creates a new `Config`. This function will need a few mandatory parameters
@@ -499,7 +504,7 @@ lazyView ((Config { itemView, customContainer, mOnInfiniteListScrollMsg, mCss })
                 --[]
                 [ case mCss of
                     Just css ->
-                        Element.html <| Html.node "style" [ Html.Attributes.id "OHLALA" ] [ Html.text css ]
+                        Element.html <| Html.node "style" [] [ Html.text css ]
 
                     Nothing ->
                         Element.none
